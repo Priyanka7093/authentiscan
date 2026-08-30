@@ -1,0 +1,82 @@
+# ==============================
+# Environment / Secrets
+# ==============================
+.env
+.env.*
+!.env.example
+# ==============================
+# Python
+# ==============================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+# ==============================
+# Node / React / Angular
+# ==============================
+node_modules/
+dist/
+build/
+.vite/
+.angular/
+.cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+# ==============================
+# IDE / Editors
+# ==============================
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.iml
+# ==============================
+# OS files
+# ==============================
+.DS_Store
+Thumbs.db
+desktop.ini
+# ==============================
+# Logs
+# ==============================
+*.log
+# ==============================
+# Python generated files
+# ==============================
+*.pyc
+# ==============================
+# Machine Learning / Large Files
+# ==============================
+*.onnx
+*.pt
+*.pth
+*.pb
+# Datasets
+*.npy
+*.npz
+*.csv
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.7z
+# ==============================
+# Temporary files
+# ==============================
+*.tmp
+*.temp
+*.swp
+*.swo
+# Test videos
+*.mp4
+*.avi
+*.mov
