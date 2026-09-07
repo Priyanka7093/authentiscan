@@ -495,3 +495,14 @@ git push -u origin feature/my-feature
 
 * **Priyanka Reddy**
 * **Gowtham Sai Garnepudi**
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License.
+
+Copyright (c) 2026 Priyanka Reddy and Gowtham Sai Garnepudi.
+
+See the [LICENSE](LICENSE) file for details.
+
