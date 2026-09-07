@@ -56,6 +56,16 @@ def run_prediction(face_sequence):
         "confidence": fake_probability if fake_probability > 0.5 else 1 - fake_probability
     }
 
+@app.get("/")
+def root():
+    return {
+        "service": "AuthentiScan Deepfake Detection API",
+        "status": "online",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "health": "/health"
+    }
+
 @app.get("/health")
 def health():
     return {"status": "ok", "model_loaded": True}
