@@ -37,12 +37,12 @@ def detect_and_crop_face(frame):
         return None
     h, w = frame.shape[:2]
 
-    # Downscale large frames for fast, memory-efficient face detection (max 480px)
-    max_dim = 480
+    # Downscale large frames for fast, memory-efficient face detection (max 360px)
+    max_dim = 360
     if max(h, w) > max_dim:
         scale = max_dim / float(max(h, w))
         detect_w, detect_h = int(w * scale), int(h * scale)
-        detect_frame = cv2.resize(frame, (detect_w, detect_h), interpolation=cv2.INTER_AREA)
+        detect_frame = cv2.resize(frame, (detect_w, detect_h), interpolation=cv2.INTER_LINEAR)
     else:
         scale = 1.0
         detect_w, detect_h = w, h
@@ -63,8 +63,8 @@ def detect_and_crop_face(frame):
         box_w = int(fbw / scale)
         box_h = int(fbh / scale)
 
-        mx = int(box_w * 0.1)
-        my = int(box_h * 0.1)
+        mx = int(box_w * 0.15)
+        my = int(box_h * 0.15)
         x1 = max(0, x - mx)
         y1 = max(0, y - my)
         x2 = min(w, x + box_w + mx)
@@ -72,7 +72,7 @@ def detect_and_crop_face(frame):
 
         face_crop = frame[y1:y2, x1:x2]
         if face_crop.size > 0:
-            face_resized = cv2.resize(face_crop, (FRAME_SIZE, FRAME_SIZE), interpolation=cv2.INTER_AREA)
+            face_resized = cv2.resize(face_crop, (FRAME_SIZE, FRAME_SIZE), interpolation=cv2.INTER_LINEAR)
             return cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB)
 
     # Fast fallback: Haar Cascade
@@ -81,7 +81,7 @@ def detect_and_crop_face(frame):
         cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         if os.path.exists(cascade_path):
             haar = cv2.CascadeClassifier(cascade_path)
-            haar_faces = haar.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=3, minSize=(30, 30))
+            haar_faces = haar.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=3, minSize=(25, 25))
             if len(haar_faces) > 0:
                 hx, hy, hw, hh = haar_faces[0]
                 x1 = max(0, int(hx / scale))
@@ -90,7 +90,7 @@ def detect_and_crop_face(frame):
                 y2 = min(h, y1 + int(hh / scale))
                 face_crop = frame[y1:y2, x1:x2]
                 if face_crop.size > 0:
-                    face_resized = cv2.resize(face_crop, (FRAME_SIZE, FRAME_SIZE), interpolation=cv2.INTER_AREA)
+                    face_resized = cv2.resize(face_crop, (FRAME_SIZE, FRAME_SIZE), interpolation=cv2.INTER_LINEAR)
                     return cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB)
     except Exception:
         pass
@@ -100,7 +100,8 @@ def detect_and_crop_face(frame):
 
 def extract_face_sequence(video_path, num_frames=NUM_FRAMES):
     """
-    Extracts `num_frames` from the video sequentially for maximum speed and memory efficiency.
+    Ultra-fast grab-and-retrieve frame sampling:
+    Only decodes the 20 target frames without decoding intermediate frames.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -115,25 +116,33 @@ def extract_face_sequence(video_path, num_frames=NUM_FRAMES):
     fallback_frames = []
 
     frame_idx = 0
-    # Process sequentially without expensive seeks
-    while cap.isOpened() and len(collected_faces) < num_frames and frame_idx < 400:
-        ret, frame = cap.read()
-        if not ret or frame is None:
+    # Fast grab loop (skips decoding unwanted frames)
+    while cap.isOpened() and len(collected_faces) < num_frames:
+        grabbed = cap.grab()
+        if not grabbed:
             break
 
         if frame_idx % step == 0:
-            # Store center-crop fallback
-            h, w = frame.shape[:2]
-            min_dim = min(h, w)
-            cy, cx = h // 2, w // 2
-            center_crop = frame[cy - min_dim // 2: cy + min_dim // 2, cx - min_dim // 2: cx + min_dim // 2]
-            if center_crop.size > 0:
-                center_resized = cv2.resize(center_crop, (FRAME_SIZE, FRAME_SIZE), interpolation=cv2.INTER_AREA)
-                fallback_frames.append(cv2.cvtColor(center_resized, cv2.COLOR_BGR2RGB))
+            ret, frame = cap.retrieve()
+            if ret and frame is not None:
+                # Downscale large resolution immediately to 480p to keep RAM tiny
+                h, w = frame.shape[:2]
+                if max(h, w) > 480:
+                    s = 480.0 / max(h, w)
+                    frame = cv2.resize(frame, (int(w * s), int(h * s)), interpolation=cv2.INTER_LINEAR)
 
-            face = detect_and_crop_face(frame)
-            if face is not None:
-                collected_faces.append(face)
+                # Center-crop fallback in case no face detected in this frame
+                h, w = frame.shape[:2]
+                min_dim = min(h, w)
+                cy, cx = h // 2, w // 2
+                center_crop = frame[cy - min_dim // 2: cy + min_dim // 2, cx - min_dim // 2: cx + min_dim // 2]
+                if center_crop.size > 0:
+                    center_resized = cv2.resize(center_crop, (FRAME_SIZE, FRAME_SIZE), interpolation=cv2.INTER_LINEAR)
+                    fallback_frames.append(cv2.cvtColor(center_resized, cv2.COLOR_BGR2RGB))
+
+                face = detect_and_crop_face(frame)
+                if face is not None:
+                    collected_faces.append(face)
 
         frame_idx += 1
 

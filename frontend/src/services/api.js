@@ -12,29 +12,38 @@ export async function fetchHealth() {
   return res.json();
 }
 
-export async function predictVideo(file) {
+export async function predictVideo(file, retries = 1) {
   const formData = new FormData();
   formData.append("file", file);
 
-  const res = await fetch(`${API_BASE}/predict/video`, {
-    method: "POST",
-    body: formData,
-  });
+  try {
+    const res = await fetch(`${API_BASE}/predict/video`, {
+      method: "POST",
+      body: formData,
+    });
 
-  if (!res.ok) {
-    let errMsg = `Failed to analyze video (${res.status})`;
-    try {
-      const errData = await res.json();
-      if (errData && errData.detail) {
-        errMsg = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+    if (!res.ok) {
+      let errMsg = `Failed to analyze video (${res.status})`;
+      try {
+        const errData = await res.json();
+        if (errData && errData.detail) {
+          errMsg = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+        }
+      } catch {
+        errMsg = `Server error (${res.status}): ${res.statusText || 'Service currently waking up or unavailable'}`;
       }
-    } catch {
-      errMsg = `Server error (${res.status}): ${res.statusText || 'Service currently unavailable'}`;
+      throw new Error(errMsg);
     }
-    throw new Error(errMsg);
-  }
 
-  return res.json();
+    return await res.json();
+  } catch (err) {
+    if (retries > 0 && (err.message.includes("fetch") || err.message.includes("network") || err.name === "TypeError")) {
+      console.warn("Retrying video analysis after brief delay (service waking up)...");
+      await new Promise((r) => setTimeout(r, 2500));
+      return predictVideo(file, retries - 1);
+    }
+    throw err;
+  }
 }
 
 export async function fetchPredictionById(id) {

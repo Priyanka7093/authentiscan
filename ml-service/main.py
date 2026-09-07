@@ -135,8 +135,8 @@ def predict_npy(file: UploadFile = File(...), db: Session = Depends(get_db)):
 def predict_video(file: UploadFile = File(...), db: Session = Depends(get_db)):
     suffix = os.path.splitext(file.filename)[1] or ".mp4"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        contents = file.file.read()
-        tmp.write(contents)
+        import shutil
+        shutil.copyfileobj(file.file, tmp)
         tmp_path = tmp.name
 
     try:
