@@ -370,6 +370,50 @@ http://localhost:5173
 
 ---
 
+# 🚀 Deployment on Render
+
+This project includes a `render.yaml` Blueprint for fast, automated deployment on [Render](https://render.com).
+
+### Option 1: Render Blueprint (Recommended)
+
+1. Push this repository to your GitHub account.
+2. Log into [Render](https://dashboard.render.com/).
+3. Click **New +** > **Blueprint**.
+4. Connect your `authentiscan` GitHub repository.
+5. Render will automatically detect `render.yaml` and configure:
+   - **Backend Web Service** (`authentiscan-backend`)
+   - **Frontend Static Site** (`authentiscan-frontend`)
+6. Click **Apply**.
+7. Once the backend finishes deploying, copy its URL (e.g. `https://authentiscan-backend.onrender.com`) and add it to your frontend static site environment variable `VITE_API_URL`.
+
+---
+
+### Option 2: Manual Setup on Render
+
+#### 1. Backend Web Service (`ml-service`)
+- **Type**: Web Service
+- **Runtime**: Python
+- **Root Directory**: `ml-service` (or repo root)
+- **Build Command**: `pip install -r ml-service/requirements.txt`
+- **Start Command**: `cd ml-service && uvicorn main:app --host 0.0.0.0 --port $PORT`
+- **Environment Variables**:
+  - `PYTHON_VERSION`: `3.11.9`
+  - `DATABASE_URL`: `sqlite:///./deepfake_db.sqlite`
+
+#### 2. Frontend Static Site (`frontend`)
+- **Type**: Static Site
+- **Root Directory**: `frontend`
+- **Build Command**: `npm install && npm run build`
+- **Publish Directory**: `dist`
+- **Environment Variables**:
+  - `VITE_API_URL`: `https://your-backend-name.onrender.com`
+- **Redirects/Rewrites**:
+  - Source: `/*`
+  - Destination: `/index.html`
+  - Action: `Rewrite`
+
+---
+
 # 🔌 API Endpoints
 
 ## API Gateway

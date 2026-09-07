@@ -1,9 +1,20 @@
 import cv2
 import numpy as np
 
-FACE_DETECTOR_PATH = "face_detection_yunet_2023mar.onnx"
+import os
+import urllib.request
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FACE_DETECTOR_PATH = os.path.join(BASE_DIR, "face_detection_yunet_2023mar.onnx")
 NUM_FRAMES = 20
 FRAME_SIZE = 224
+
+YUNET_URL = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+
+if not os.path.exists(FACE_DETECTOR_PATH) or os.path.getsize(FACE_DETECTOR_PATH) < 10000:
+    print(f"Downloading YuNet face detection model to {FACE_DETECTOR_PATH}...")
+    urllib.request.urlretrieve(YUNET_URL, FACE_DETECTOR_PATH)
+    print("YuNet face detection model downloaded successfully.")
 
 # Load the face detector once at import time
 face_detector = cv2.FaceDetectorYN_create(

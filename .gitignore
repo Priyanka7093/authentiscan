@@ -70,12 +70,15 @@ desktop.ini
 *.tar.gz
 *.7z
 # ==============================
-# Temporary files
+# Temporary files / Local DBs
 # ==============================
 *.tmp
 *.temp
 *.swp
 *.swo
+*.sqlite
+*.sqlite3
+*.db
 # Test videos
 *.mp4
 *.avi

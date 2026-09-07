@@ -1,0 +1,23 @@
+services:
+  # Backend API & ML Service
+  - type: web
+    name: authentiscan-backend
+    runtime: python
+    buildCommand: pip install -r ml-service/requirements.txt
+    startCommand: cd ml-service && uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_URL
+        value: sqlite:///./deepfake_db.sqlite
+
+  # Frontend Static Site (React + Vite)
+  - type: web
+    name: authentiscan-frontend
+    runtime: static
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
