@@ -38,6 +38,32 @@ class PredictionRecord(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        if db.query(PredictionRecord).count() == 0:
+            sample_records = [
+                PredictionRecord(
+                    filename="sample_real.mp4",
+                    fake_probability=0.08,
+                    prediction="REAL",
+                    confidence=0.92,
+                    created_at=datetime.utcnow()
+                ),
+                PredictionRecord(
+                    filename="sample_fake.mp4",
+                    fake_probability=0.94,
+                    prediction="FAKE",
+                    confidence=0.94,
+                    created_at=datetime.utcnow()
+                )
+            ]
+            db.add_all(sample_records)
+            db.commit()
+    except Exception as e:
+        print(f"Notice during db init seeding: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 
 def get_db():

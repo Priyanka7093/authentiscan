@@ -6,6 +6,7 @@ import PredictionHistory from "./pages/PredictionHistory";
 import PredictionDetail from "./pages/PredictionDetail";
 import Analytics from "./pages/Analytics";
 import ExportReport from "./pages/ExportReport";
+import DatabaseConsole from "./pages/DatabaseConsole";
 import About from "./pages/About";
 import Faq from "./pages/Faq";
 
@@ -18,6 +19,7 @@ export default function App() {
         <Route path="/analyze" element={<Analyze />} />
         <Route path="/predictions" element={<PredictionHistory />} />
         <Route path="/predictions/:id" element={<PredictionDetail />} />
+        <Route path="/database" element={<DatabaseConsole />} />
         <Route path="/analytics" element={<Analytics />} />
         <Route path="/export" element={<ExportReport />} />
         <Route path="/about" element={<About />} />

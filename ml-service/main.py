@@ -7,9 +7,17 @@ import io
 import tempfile
 import os
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 from video_preprocessing import extract_face_sequence
 from database import init_db, get_db, PredictionRecord
+from h2_console import H2_CONSOLE_HTML, execute_h2_query, get_h2_schema_info
+
+
+class SqlQueryRequest(BaseModel):
+    sql: str
+
 
 
 app = FastAPI(title="Deepfake Detection API")
@@ -108,6 +116,26 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok", "model_loaded": True}
+
+# ===== H2 Database Console Web Interface & API =====
+
+@app.get("/h2-console", response_class=HTMLResponse)
+@app.get("/h2-console/", response_class=HTMLResponse)
+@app.get("/db-console", response_class=HTMLResponse)
+def h2_console_view():
+    """Serves the interactive H2 Database Console Web UI."""
+    return HTMLResponse(content=H2_CONSOLE_HTML, status_code=200)
+
+@app.post("/h2-console/execute")
+def h2_console_execute(req: SqlQueryRequest):
+    """Executes arbitrary SQL queries from the H2 Database Console."""
+    return execute_h2_query(req.sql)
+
+@app.get("/h2-console/schema")
+def h2_console_schema():
+    """Returns database schema information (tables, columns, types)."""
+    return get_h2_schema_info()
+
 
 @app.post("/predict/npy")
 def predict_npy(file: UploadFile = File(...), db: Session = Depends(get_db)):

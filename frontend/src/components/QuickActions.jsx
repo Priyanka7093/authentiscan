@@ -1,10 +1,12 @@
-import { Video, FileText, ChevronRight, Zap } from "lucide-react";
+import { Video, FileText, ChevronRight, Zap, Database } from "lucide-react";
 import { Link } from "react-router-dom";
 
 const actions = [
   { to: "/analyze", icon: Video, title: "Analyze New Video", sub: "Upload a video and get AI analysis", tint: "bg-blue-500" },
-  { to: "/history", icon: FileText, title: "View Prediction History", sub: "See all your previous predictions", tint: "bg-indigo-500" },
+  { to: "/predictions", icon: FileText, title: "View Prediction History", sub: "See all your previous predictions", tint: "bg-indigo-500" },
+  { to: "/database", icon: Database, title: "H2 Database Console", sub: "Query database tables & run SQL", tint: "bg-emerald-600" },
 ];
+
 
 export default function QuickActions() {
   return (

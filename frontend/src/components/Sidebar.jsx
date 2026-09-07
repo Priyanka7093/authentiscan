@@ -5,6 +5,7 @@ import {
   FileText,
   BarChart3,
   Download,
+  Database,
   ArrowLeft,
 } from "lucide-react";
 import { NavLink } from "react-router-dom";
@@ -13,9 +14,11 @@ const links = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/analyze", icon: Video, label: "Analyze Video" },
   { to: "/predictions", icon: FileText, label: "Prediction History" },
+  { to: "/database", icon: Database, label: "H2 Database Console" },
   { to: "/analytics", icon: BarChart3, label: "Analytics" },
   { to: "/export", icon: Download, label: "Export Report" },
 ];
+
 
 export default function Sidebar() {
   return (
