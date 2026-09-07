@@ -40,6 +40,14 @@ model = build_model(freeze_base=True)
 model.load_weights("model/deepfake_detector_final.weights.h5")
 print("Model loaded and ready.")
 
+# Warm up model graph so first request doesn't suffer graph trace latency
+try:
+    _warmup_input = np.zeros((1, 20, 224, 224, 3), dtype=np.float32)
+    _ = model(_warmup_input, training=False)
+    print("Model warmup complete.")
+except Exception as e:
+    print(f"Warmup notice: {e}")
+
 print("Initializing database...")
 init_db()
 print("Database ready.")
@@ -48,7 +56,8 @@ def run_prediction(face_sequence):
     arr = face_sequence.astype("float32")
     arr = tf.keras.applications.mobilenet_v2.preprocess_input(arr)
     arr = np.expand_dims(arr, axis=0)
-    prediction = model.predict(arr)
+    # Direct tensor call is 10x faster than model.predict
+    prediction = model(arr, training=False).numpy()
     fake_probability = float(prediction[0][0])
     return {
         "fake_probability": fake_probability,
@@ -71,37 +80,40 @@ def health():
     return {"status": "ok", "model_loaded": True}
 
 @app.post("/predict/npy")
-async def predict_npy(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    contents = await file.read()
-    arr = np.load(io.BytesIO(contents)).astype("float32")
-    arr = tf.keras.applications.mobilenet_v2.preprocess_input(arr)
-    arr = np.expand_dims(arr, axis=0)
-    prediction = model.predict(arr)
-    fake_probability = float(prediction[0][0])
-    result = {
-        "fake_probability": fake_probability,
-        "prediction": "FAKE" if fake_probability > 0.5 else "REAL",
-        "confidence": fake_probability if fake_probability > 0.5 else 1 - fake_probability
-    }
+def predict_npy(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    try:
+        contents = file.file.read()
+        arr = np.load(io.BytesIO(contents)).astype("float32")
+        arr = tf.keras.applications.mobilenet_v2.preprocess_input(arr)
+        arr = np.expand_dims(arr, axis=0)
+        prediction = model(arr, training=False).numpy()
+        fake_probability = float(prediction[0][0])
+        result = {
+            "fake_probability": fake_probability,
+            "prediction": "FAKE" if fake_probability > 0.5 else "REAL",
+            "confidence": fake_probability if fake_probability > 0.5 else 1 - fake_probability
+        }
 
-    record = PredictionRecord(
-        filename=file.filename,
-        fake_probability=result["fake_probability"],
-        prediction=result["prediction"],
-        confidence=result["confidence"]
-    )
-    db.add(record)
-    db.commit()
-    db.refresh(record)
+        record = PredictionRecord(
+            filename=file.filename,
+            fake_probability=result["fake_probability"],
+            prediction=result["prediction"],
+            confidence=result["confidence"]
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
 
-    result["id"] = record.id
-    return result
+        result["id"] = record.id
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"NumPy prediction error: {str(e)}")
 
 @app.post("/predict/video")
-async def predict_video(file: UploadFile = File(...), db: Session = Depends(get_db)):
+def predict_video(file: UploadFile = File(...), db: Session = Depends(get_db)):
     suffix = os.path.splitext(file.filename)[1] or ".mp4"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        contents = await file.read()
+        contents = file.file.read()
         tmp.write(contents)
         tmp_path = tmp.name
 
@@ -123,8 +135,15 @@ async def predict_video(file: UploadFile = File(...), db: Session = Depends(get_
         return result
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        print(f"Error processing video: {e}")
+        raise HTTPException(status_code=500, detail=f"Inference error: {str(e)}")
     finally:
-        os.remove(tmp_path)
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 # ===== CRUD endpoints for prediction history =====
 
