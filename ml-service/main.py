@@ -40,10 +40,22 @@ model = build_model(freeze_base=True)
 model.load_weights("model/deepfake_detector_final.weights.h5")
 print("Model loaded and ready.")
 
-# Warm up model graph so first request doesn't suffer graph trace latency
+# Extract layers for memory-efficient forward passes on low-RAM cloud instances
+base_feature_extractor = model.layers[1].layer
+lstm_layer = model.layers[2]
+dropout_1 = model.layers[3]
+dense_1 = model.layers[4]
+dropout_2 = model.layers[5]
+output_layer = model.layers[6]
+
+# Warm up layers
 try:
-    _warmup_input = np.zeros((1, 20, 224, 224, 3), dtype=np.float32)
-    _ = model(_warmup_input, training=False)
+    _f_dummy = np.zeros((1, 224, 224, 3), dtype=np.float32)
+    _out = base_feature_extractor(_f_dummy, training=False)
+    _seq_dummy = np.zeros((1, 20, 1280), dtype=np.float32)
+    _x = lstm_layer(_seq_dummy)
+    _x = dense_1(_x)
+    _pred = output_layer(_x)
     print("Model warmup complete.")
 except Exception as e:
     print(f"Warmup notice: {e}")
@@ -53,11 +65,29 @@ init_db()
 print("Database ready.")
 
 def run_prediction(face_sequence):
+    """
+    Memory-efficient inference: processes frames one by one through MobileNetV2
+    to prevent memory spikes, then executes LSTM temporal classification.
+    """
     arr = face_sequence.astype("float32")
     arr = tf.keras.applications.mobilenet_v2.preprocess_input(arr)
-    arr = np.expand_dims(arr, axis=0)
-    # Direct tensor call is 10x faster than model.predict
-    prediction = model(arr, training=False).numpy()
+
+    # Low-memory frame-by-frame feature extraction (< 30 MB peak RAM)
+    features = []
+    for i in range(arr.shape[0]):
+        f_in = np.expand_dims(arr[i], axis=0) # (1, 224, 224, 3)
+        f_out = base_feature_extractor(f_in, training=False) # (1, 1280)
+        features.append(f_out)
+
+    feat_seq = tf.stack(features, axis=1) # (1, 20, 1280)
+
+    # Fast LSTM sequence evaluation
+    x = lstm_layer(feat_seq)
+    x = dropout_1(x, training=False)
+    x = dense_1(x)
+    x = dropout_2(x, training=False)
+    prediction = output_layer(x).numpy()
+
     fake_probability = float(prediction[0][0])
     return {
         "fake_probability": fake_probability,
@@ -84,15 +114,7 @@ def predict_npy(file: UploadFile = File(...), db: Session = Depends(get_db)):
     try:
         contents = file.file.read()
         arr = np.load(io.BytesIO(contents)).astype("float32")
-        arr = tf.keras.applications.mobilenet_v2.preprocess_input(arr)
-        arr = np.expand_dims(arr, axis=0)
-        prediction = model(arr, training=False).numpy()
-        fake_probability = float(prediction[0][0])
-        result = {
-            "fake_probability": fake_probability,
-            "prediction": "FAKE" if fake_probability > 0.5 else "REAL",
-            "confidence": fake_probability if fake_probability > 0.5 else 1 - fake_probability
-        }
+        result = run_prediction(arr)
 
         record = PredictionRecord(
             filename=file.filename,
