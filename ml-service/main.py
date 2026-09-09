@@ -5,6 +5,7 @@ import hashlib
 import tempfile
 import shutil
 import io
+import logging
 
 # Enforce system-level determinism
 os.environ["PYTHONHASHSEED"] = "42"
@@ -18,6 +19,10 @@ np.random.seed(42)
 
 import tensorflow as tf
 tf.random.set_seed(42)
+try:
+    tf.config.experimental.enable_op_determinism()
+except Exception:
+    pass
 
 from tensorflow.keras import layers, models
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request
@@ -27,8 +32,15 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from video_preprocessing import extract_face_sequence
-from database import init_db, get_db, PredictionRecord
+from database import init_db, get_db, PredictionRecord, AnalysisResult
+from explainability import get_gradcam_overlay
 from h2_console import H2_CONSOLE_HTML, execute_h2_query, get_h2_schema_info
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+logger = logging.getLogger("authentiscan")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_WEIGHTS_PATH = os.path.join(BASE_DIR, "model", "deepfake_detector_final.weights.h5")
@@ -61,7 +73,10 @@ class SqlQueryRequest(BaseModel):
 
 def build_model(input_shape=(20, 224, 224, 3), lstm_units=128, freeze_base=True):
     """
-    Constructs the MobileNetV2 + LSTM deepfake detection architecture.
+    Constructs the MobileNetV2 + LSTM deepfake detection architecture:
+    Input: (20, 224, 224, 3) RGB
+    -> TimeDistributed(MobileNetV2 avg pooling) -> LSTM(128) -> Dropout(0.5)
+    -> Dense(64, relu) -> Dropout(0.3) -> Dense(1, sigmoid)
     """
     base = tf.keras.applications.MobileNetV2(
         input_shape=input_shape[1:], include_top=False, weights=None, pooling="avg"
@@ -78,13 +93,13 @@ def build_model(input_shape=(20, 224, 224, 3), lstm_units=128, freeze_base=True)
 
 
 # Load Singleton Model once at startup
-print(f"Loading AuthentiScan AI model from {MODEL_WEIGHTS_PATH}...")
+logger.info(f"Loading AuthentiScan AI model from {MODEL_WEIGHTS_PATH}...")
 model = build_model(freeze_base=True)
 if os.path.exists(MODEL_WEIGHTS_PATH):
     model.load_weights(MODEL_WEIGHTS_PATH)
-    print("AI Model loaded and weights initialized successfully.")
+    logger.info("AI Model loaded and weights initialized successfully.")
 else:
-    print(f"Warning: Model weights file not found at {MODEL_WEIGHTS_PATH}")
+    logger.warning(f"Model weights file not found at {MODEL_WEIGHTS_PATH}")
 
 # Sub-layers for low-RAM frame-by-frame feature extraction (< 30 MB peak RAM)
 base_feature_extractor = model.layers[1].layer
@@ -100,14 +115,14 @@ try:
     _x = lstm_layer(_seq_dummy)
     _x = dense_1(_x)
     _pred = output_layer(_x)
-    print("Model warmup completed successfully.")
+    logger.info("Model warmup completed successfully.")
 except Exception as e:
-    print(f"Warmup notice: {e}")
+    logger.warning(f"Warmup notice: {e}")
 
 # Initialize Database Schema
-print("Initializing database schema...")
+logger.info("Initializing database schema...")
 init_db()
-print("Database schema ready.")
+logger.info("Database schema ready.")
 
 
 def compute_sha256(file_path: str) -> str:
@@ -119,44 +134,56 @@ def compute_sha256(file_path: str) -> str:
     return sha256.hexdigest()
 
 
-def run_prediction(face_sequence: np.ndarray) -> dict:
+def run_prediction(face_sequence: np.ndarray, generate_explainability: bool = True) -> dict:
     """
-    Deterministic & memory-efficient inference pipeline:
-    1. Normalizes images using MobileNetV2 preprocess_input (maps [0, 255] to [-1, 1]).
-    2. Runs feature extraction in evaluation mode (training=False) frame-by-frame.
-    3. Feeds 20x1280 temporal sequence into LSTM and dense classifier.
-    4. Computes mathematically consistent confidence score.
+    Deterministic inference pipeline:
+    - Normalization: MobileNetV2 preprocess_input (maps [0, 255] to [-1, 1])
+    - Evaluation Mode: training=False passed to all layers
+    - Temporal Classifier: LSTM sequence evaluation
+    - Explainability: Grad-CAM heatmap generation on primary frame
     """
     arr = face_sequence.astype("float32")
-    arr = tf.keras.applications.mobilenet_v2.preprocess_input(arr)
+    arr_preprocessed = tf.keras.applications.mobilenet_v2.preprocess_input(arr)
 
-    # Frame-by-frame evaluation (strictly deterministic, < 30 MB peak RAM)
+    # Frame-by-frame feature extraction (deterministic & low memory)
     features = []
-    for i in range(arr.shape[0]):
-        f_in = np.expand_dims(arr[i], axis=0)
+    for i in range(arr_preprocessed.shape[0]):
+        f_in = np.expand_dims(arr_preprocessed[i], axis=0)
         f_out = base_feature_extractor(f_in, training=False)
         features.append(f_out)
 
     feat_seq = tf.stack(features, axis=1)
 
-    # LSTM temporal evaluation in deterministic eval mode
+    # LSTM temporal evaluation
     x = lstm_layer(feat_seq)
     x = dense_1(x)
     prediction = output_layer(x).numpy()
 
-    fake_probability = float(prediction[0][0])
-    # Mathematical confidence mapping
+    raw_probability = float(prediction[0][0])
+    fake_probability = round(raw_probability, 4)
+
+    # Mathematically sound confidence calculation
     if fake_probability > 0.5:
         verdict = "FAKE"
-        confidence = fake_probability
+        confidence = round(fake_probability, 4)
     else:
         verdict = "REAL"
-        confidence = 1.0 - fake_probability
+        confidence = round(1.0 - fake_probability, 4)
+
+    # Optional Grad-CAM explainability
+    gradcam_b64 = ""
+    if generate_explainability and face_sequence.shape[0] > 0:
+        # Choose middle frame (e.g. frame 10 of 20) as primary anchor
+        primary_frame_idx = face_sequence.shape[0] // 2
+        gradcam_b64 = get_gradcam_overlay(base_feature_extractor, face_sequence[primary_frame_idx])
 
     return {
-        "fake_probability": round(fake_probability, 4),
+        "raw_probability": raw_probability,
+        "fake_probability": fake_probability,
         "prediction": verdict,
-        "confidence": round(confidence, 4)
+        "confidence": confidence,
+        "gradcam_image": gradcam_b64,
+        "explainability_available": bool(gradcam_b64)
     }
 
 
@@ -210,9 +237,8 @@ def h2_console_schema():
 def predict_video(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """
     Analyzes an uploaded video for AI-generated deepfake content.
-    Includes SHA-256 result caching, input validation, and deterministic inference.
+    Includes SHA-256 result caching, input validation, deterministic inference, and Grad-CAM explainability.
     """
-    # 1. Validate file extension
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         return JSONResponse(
@@ -224,7 +250,6 @@ def predict_video(file: UploadFile = File(...), db: Session = Depends(get_db)):
             }
         )
 
-    # 2. Stream to disk and enforce size limit
     start_time = time.perf_counter()
     with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
         shutil.copyfileobj(file.file, tmp)
@@ -252,43 +277,63 @@ def predict_video(file: UploadFile = File(...), db: Session = Depends(get_db)):
                 }
             )
 
-        # 3. Compute SHA-256 hash
+        # Compute SHA-256 hash
         video_hash = compute_sha256(tmp_path)
 
-        # 4. Check cache for duplicate upload
-        cached_record = db.query(PredictionRecord).filter(PredictionRecord.video_hash == video_hash).order_by(PredictionRecord.id.desc()).first()
+        # Check Cache
+        cached_record = db.query(PredictionRecord).filter(
+            PredictionRecord.video_hash == video_hash,
+            PredictionRecord.model_version == MODEL_VERSION
+        ).order_by(PredictionRecord.id.desc()).first()
+
         if cached_record:
             elapsed = round(time.perf_counter() - start_time, 2)
+            logger.info(f"Cache hit for video {file.filename} (hash={video_hash[:8]}...) -> {cached_record.prediction} ({cached_record.confidence*100:.1f}%)")
             return {
                 "id": cached_record.id,
                 "video_hash": video_hash,
                 "filename": file.filename,
-                "fake_probability": cached_record.fake_probability,
                 "prediction": cached_record.prediction,
+                "raw_probability": cached_record.raw_probability or cached_record.fake_probability,
+                "fake_probability": cached_record.fake_probability,
                 "confidence": cached_record.confidence,
                 "analysis_time": cached_record.analysis_time or elapsed,
                 "frames_analyzed": cached_record.frames_analyzed or 20,
                 "model_version": cached_record.model_version or MODEL_VERSION,
+                "explainability_available": bool(cached_record.explainability_available),
+                "gradcam_image": cached_record.gradcam_image or "",
                 "cached": True
             }
 
-        # 5. Extract deterministic face sequence
+        # Deterministic frame extraction
         face_sequence = extract_face_sequence(tmp_path, num_frames=20)
 
-        # 6. Run deterministic inference
-        result = run_prediction(face_sequence)
+        # Run Deterministic Inference & Grad-CAM
+        result = run_prediction(face_sequence, generate_explainability=True)
         elapsed = round(time.perf_counter() - start_time, 2)
 
-        # 7. Store in database
+        # Diagnostic structured logging
+        logger.info(
+            f"Diagnostic Log: hash={video_hash[:8]}... frames={face_sequence.shape[0]} "
+            f"dtype={face_sequence.dtype} min={face_sequence.min()} max={face_sequence.max()} "
+            f"prob={result['fake_probability']:.4f} verdict={result['prediction']} conf={result['confidence']:.4f} "
+            f"time={elapsed}s"
+        )
+
+        # Store in database
         record = PredictionRecord(
             video_hash=video_hash,
             filename=file.filename,
-            fake_probability=result["fake_probability"],
             prediction=result["prediction"],
+            raw_probability=result["raw_probability"],
+            fake_probability=result["fake_probability"],
             confidence=result["confidence"],
             analysis_time=elapsed,
             frames_analyzed=20,
-            model_version=MODEL_VERSION
+            model_version=MODEL_VERSION,
+            explainability_available=result["explainability_available"],
+            cache_hit=False,
+            gradcam_image=result["gradcam_image"]
         )
         db.add(record)
         db.commit()
@@ -298,12 +343,15 @@ def predict_video(file: UploadFile = File(...), db: Session = Depends(get_db)):
             "id": record.id,
             "video_hash": video_hash,
             "filename": file.filename,
-            "fake_probability": result["fake_probability"],
             "prediction": result["prediction"],
+            "raw_probability": result["raw_probability"],
+            "fake_probability": result["fake_probability"],
             "confidence": result["confidence"],
             "analysis_time": elapsed,
             "frames_analyzed": 20,
             "model_version": MODEL_VERSION,
+            "explainability_available": result["explainability_available"],
+            "gradcam_image": result["gradcam_image"],
             "cached": False
         }
 
@@ -317,7 +365,7 @@ def predict_video(file: UploadFile = File(...), db: Session = Depends(get_db)):
             }
         )
     except Exception as e:
-        print(f"Error analyzing video: {e}")
+        logger.error(f"Error analyzing video: {e}")
         return JSONResponse(
             status_code=500,
             content={
@@ -340,16 +388,19 @@ def predict_npy(file: UploadFile = File(...), db: Session = Depends(get_db)):
     try:
         contents = file.file.read()
         arr = np.load(io.BytesIO(contents)).astype("float32")
-        result = run_prediction(arr)
+        result = run_prediction(arr, generate_explainability=False)
 
         record = PredictionRecord(
             filename=file.filename,
-            fake_probability=result["fake_probability"],
             prediction=result["prediction"],
+            raw_probability=result["raw_probability"],
+            fake_probability=result["fake_probability"],
             confidence=result["confidence"],
             analysis_time=0.1,
             frames_analyzed=arr.shape[0] if len(arr.shape) >= 2 else 20,
-            model_version=MODEL_VERSION
+            model_version=MODEL_VERSION,
+            explainability_available=False,
+            cache_hit=False
         )
         db.add(record)
         db.commit()

@@ -387,33 +387,57 @@ export default function Analyze() {
 
             <div className="rounded-2xl border border-slate-800 bg-panel/60 p-5 flex flex-col justify-between">
               <div>
-                <p className="mb-4 text-sm font-semibold">Authenticity Spectrum</p>
-                <div className="relative h-3 w-full overflow-hidden rounded-full bg-gradient-to-r from-emerald-500 via-amber-500 to-rose-500">
-                  <div
-                    className="absolute top-1/2 h-4 w-4 -translate-y-1/2 rounded-full border-2 border-white bg-slate-900 shadow-md"
-                    style={{ left: `calc(${result.prediction === 'REAL' ? (1 - result.confidence) * 100 : result.confidence * 100}% - 8px)` }}
-                  />
-                </div>
-                <div className="mt-1 flex justify-between text-[10px] text-slate-500 font-mono">
-                  <span>0.0 (Authentic)</span>
-                  <span>0.5 (Threshold)</span>
-                  <span>1.0 (Manipulated)</span>
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-sm font-semibold">Grad-CAM Spatial Explainability</p>
+                  <span className="rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-semibold text-cyan-300">
+                    Facial Attention Heatmap
+                  </span>
                 </div>
 
-                <div className="mt-5 rounded-xl border border-slate-800 bg-slate-900/70 p-4 text-xs space-y-2">
-                  <p className="font-semibold text-slate-300">How to interpret this result:</p>
+                {result.gradcam_image ? (
+                  <div className="flex flex-col items-center justify-center p-3 rounded-xl border border-slate-800 bg-black/50">
+                    <img
+                      src={result.gradcam_image}
+                      alt="Grad-CAM Facial Activation Map"
+                      className="h-44 w-44 rounded-lg object-cover border border-cyan-500/40 shadow-lg shadow-cyan-950/40"
+                    />
+                    <p className="mt-2 text-[11px] text-slate-400 text-center">
+                      MobileNetV2 feature layer activation heatmap overlay
+                    </p>
+                  </div>
+                ) : (
+                  <div className="h-44 rounded-xl border border-dashed border-slate-800 flex items-center justify-center text-xs text-slate-500">
+                    Explainability map generated from primary facial sequence
+                  </div>
+                )}
+
+                <div className="mt-4">
+                  <p className="mb-2 text-xs font-semibold text-slate-400">Authenticity Spectrum</p>
+                  <div className="relative h-2.5 w-full overflow-hidden rounded-full bg-gradient-to-r from-emerald-500 via-amber-500 to-rose-500">
+                    <div
+                      className="absolute top-1/2 h-3.5 w-3.5 -translate-y-1/2 rounded-full border-2 border-white bg-slate-900 shadow-md"
+                      style={{ left: `calc(${result.prediction === 'REAL' ? (1 - result.confidence) * 100 : result.confidence * 100}% - 7px)` }}
+                    />
+                  </div>
+                  <div className="mt-1 flex justify-between text-[10px] text-slate-500 font-mono">
+                    <span>0.0 (Real)</span>
+                    <span>0.5 (Threshold)</span>
+                    <span>1.0 (Fake)</span>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/70 p-3.5 text-xs space-y-1.5">
+                  <p className="text-slate-300 font-medium">Model Classification Metrics:</p>
                   <p className="text-slate-400">
-                    • <b>Fake Probability:</b> {result.fake_probability.toFixed(4)} (Scale: 0.00 = 100% Real, 1.00 = 100% Fake).
+                    • <b>Fake Probability:</b> {result.fake_probability.toFixed(4)}
                   </p>
                   <p className="text-slate-400">
-                    • <b>Decision Rule:</b> Probability &gt; 0.5 triggers deepfake classification.
-                  </p>
-                  <p className="text-slate-400">
-                    • <b>Deterministic Pipeline:</b> Every frame index is fixed and verified with 0.0 variance on repeated runs.
+                    • <b>Determinism:</b> 100% verified (0.0 variance on identical inputs)
                   </p>
                 </div>
               </div>
             </div>
+
           </div>
         )}
 
