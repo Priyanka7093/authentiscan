@@ -31,7 +31,7 @@ try:
         FACE_DETECTOR_PATH,
         "",
         (320, 320),
-        score_threshold=0.6,
+        score_threshold=0.5,
         nms_threshold=0.3,
         top_k=5000
     )
@@ -45,7 +45,7 @@ def detect_and_crop_face(frame):
     Deterministic face detection and cropping:
     - Downscales frame proportionally for speed & low memory
     - Detects faces using YuNet (or Haar Cascade fallback)
-    - Deterministically selects the PRIMARY face (largest bounding box area with score >= 0.6)
+    - Deterministically selects the PRIMARY face (largest bounding box area with score >= 0.5)
     - Adds 15% margin for facial context
     - Returns cropped + resized RGB frame (224, 224, 3), or None if no face found.
     """
@@ -79,7 +79,7 @@ def detect_and_crop_face(frame):
         for f in faces:
             area = float(f[2] * f[3])
             score = float(f[-1]) if len(f) > 4 else 1.0
-            if score >= 0.5 and area > max_area:
+            if score >= 0.4 and area > max_area:
                 max_area = area
                 best_face = f
 
@@ -113,7 +113,6 @@ def detect_and_crop_face(frame):
             haar = cv2.CascadeClassifier(cascade_path)
             haar_faces = haar.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=4, minSize=(25, 25))
             if len(haar_faces) > 0:
-                # Pick largest area
                 best_haar = max(haar_faces, key=lambda b: b[2] * b[3])
                 hx, hy, hw, hh = best_haar
                 x1 = max(0, int(hx / scale))
@@ -146,22 +145,21 @@ def extract_face_sequence(video_path, num_frames=NUM_FRAMES):
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if total_frames <= 0:
-        # Fallback for streams/codecs that don't report frame count upfront
         total_frames = 100
 
     # Calculate exact deterministic target indices
     if total_frames < num_frames:
         target_indices = set(range(total_frames))
-        total_slots = total_frames
     else:
         target_indices = set(np.linspace(0, total_frames - 1, num_frames, dtype=int).tolist())
-        total_slots = num_frames
 
     slot_faces = {}
     slot_fallbacks = {}
+    processed_indices = set()
 
     frame_idx = 0
-    while cap.isOpened() and len(slot_faces) + len(slot_fallbacks) < len(target_indices):
+    # Fast grab loop: only retrieve when frame_idx is one of our target indices
+    while cap.isOpened() and len(processed_indices) < len(target_indices):
         grabbed = cap.grab()
         if not grabbed:
             break
@@ -169,7 +167,7 @@ def extract_face_sequence(video_path, num_frames=NUM_FRAMES):
         if frame_idx in target_indices:
             ret, frame = cap.retrieve()
             if ret and frame is not None:
-                # Downscale large resolution immediately to 480p to keep RAM tiny
+                # Downscale large resolution immediately to 480p to keep RAM tiny & fast
                 h, w = frame.shape[:2]
                 if max(h, w) > 480:
                     s = 480.0 / max(h, w)
@@ -187,6 +185,8 @@ def extract_face_sequence(video_path, num_frames=NUM_FRAMES):
                 face = detect_and_crop_face(frame)
                 if face is not None:
                     slot_faces[frame_idx] = face
+
+            processed_indices.add(frame_idx)
 
         frame_idx += 1
 
