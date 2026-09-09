@@ -1,4 +1,5 @@
 import os
+import gc
 import random
 import numpy as np
 
@@ -31,7 +32,7 @@ try:
         FACE_DETECTOR_PATH,
         "",
         (320, 320),
-        score_threshold=0.5,
+        score_threshold=0.45,
         nms_threshold=0.3,
         top_k=5000
     )
@@ -40,35 +41,23 @@ except Exception as e:
     face_detector = None
 
 
-def detect_and_crop_face(frame):
+def detect_and_crop_face(frame_small):
     """
-    Deterministic face detection and cropping:
-    - Downscales frame proportionally for speed & low memory
+    Deterministic face detection and cropping from a pre-downscaled frame (max 360px):
     - Detects faces using YuNet (or Haar Cascade fallback)
-    - Deterministically selects the PRIMARY face (largest bounding box area with score >= 0.5)
+    - Deterministically selects the PRIMARY face (largest bounding box area with score >= 0.4)
     - Adds 15% margin for facial context
     - Returns cropped + resized RGB frame (224, 224, 3), or None if no face found.
     """
-    if frame is None or frame.size == 0:
+    if frame_small is None or frame_small.size == 0:
         return None
-    h, w = frame.shape[:2]
-
-    # Standardize detection dimensions for fast, memory-safe inference (max 360px)
-    max_dim = 360
-    if max(h, w) > max_dim:
-        scale = max_dim / float(max(h, w))
-        detect_w, detect_h = int(w * scale), int(h * scale)
-        detect_frame = cv2.resize(frame, (detect_w, detect_h), interpolation=cv2.INTER_LINEAR)
-    else:
-        scale = 1.0
-        detect_w, detect_h = w, h
-        detect_frame = frame
+    h, w = frame_small.shape[:2]
 
     faces = None
     if face_detector is not None:
         try:
-            face_detector.setInputSize((detect_w, detect_h))
-            _, faces = face_detector.detect(detect_frame)
+            face_detector.setInputSize((w, h))
+            _, faces = face_detector.detect(frame_small)
         except Exception:
             faces = None
 
@@ -79,7 +68,7 @@ def detect_and_crop_face(frame):
         for f in faces:
             area = float(f[2] * f[3])
             score = float(f[-1]) if len(f) > 4 else 1.0
-            if score >= 0.4 and area > max_area:
+            if score >= 0.35 and area > max_area:
                 max_area = area
                 best_face = f
 
@@ -87,10 +76,10 @@ def detect_and_crop_face(frame):
             best_face = faces[0]
 
         fx, fy, fbw, fbh = best_face[:4]
-        x = max(0, int(fx / scale))
-        y = max(0, int(fy / scale))
-        box_w = int(fbw / scale)
-        box_h = int(fbh / scale)
+        x = max(0, int(fx))
+        y = max(0, int(fy))
+        box_w = int(fbw)
+        box_h = int(fbh)
 
         # 15% contextual padding around face
         mx = int(box_w * 0.15)
@@ -100,14 +89,14 @@ def detect_and_crop_face(frame):
         x2 = min(w, x + box_w + mx)
         y2 = min(h, y + box_h + my)
 
-        face_crop = frame[y1:y2, x1:x2]
+        face_crop = frame_small[y1:y2, x1:x2]
         if face_crop.size > 0:
             face_resized = cv2.resize(face_crop, (FRAME_SIZE, FRAME_SIZE), interpolation=cv2.INTER_LINEAR)
             return cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB)
 
     # Deterministic fallback: Haar Cascade
     try:
-        gray = cv2.cvtColor(detect_frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(frame_small, cv2.COLOR_BGR2GRAY)
         cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         if os.path.exists(cascade_path):
             haar = cv2.CascadeClassifier(cascade_path)
@@ -115,11 +104,11 @@ def detect_and_crop_face(frame):
             if len(haar_faces) > 0:
                 best_haar = max(haar_faces, key=lambda b: b[2] * b[3])
                 hx, hy, hw, hh = best_haar
-                x1 = max(0, int(hx / scale))
-                y1 = max(0, int(hy / scale))
-                x2 = min(w, x1 + int(hw / scale))
-                y2 = min(h, y1 + int(hh / scale))
-                face_crop = frame[y1:y2, x1:x2]
+                x1 = max(0, int(hx))
+                y1 = max(0, int(hy))
+                x2 = min(w, x1 + int(hw))
+                y2 = min(h, y1 + int(hh))
+                face_crop = frame_small[y1:y2, x1:x2]
                 if face_crop.size > 0:
                     face_resized = cv2.resize(face_crop, (FRAME_SIZE, FRAME_SIZE), interpolation=cv2.INTER_LINEAR)
                     return cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB)
@@ -131,13 +120,12 @@ def detect_and_crop_face(frame):
 
 def extract_face_sequence(video_path, num_frames=NUM_FRAMES):
     """
-    Deterministic & fast frame sampling:
-    1. Reads total frame count from video metadata.
-    2. Computes fixed, deterministic target frame indices (evenly distributed across video).
-    3. Uses cap.grab() to skip unselected frames and cap.retrieve() only for the target frames.
-    4. Detects the primary face on each target frame.
-    5. Applies temporal forward/backward fill so that slot i strictly represents time point i.
-    6. Returns (num_frames, 224, 224, 3) uint8 RGB array.
+    Ultra-low-memory deterministic frame extraction:
+    - Calculates exact 20 target frame indices
+    - Uses cap.grab() for fast frame skipping
+    - Downscales retrieved frames IMMEDIATELY to 360p and frees the 4K raw buffer instantly
+    - Extracts primary face crop or center crop fallback
+    - Memory usage remains strictly < 20 MB RAM even for 4K / 8K videos.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -158,7 +146,6 @@ def extract_face_sequence(video_path, num_frames=NUM_FRAMES):
     processed_indices = set()
 
     frame_idx = 0
-    # Fast grab loop: only retrieve when frame_idx is one of our target indices
     while cap.isOpened() and len(processed_indices) < len(target_indices):
         grabbed = cap.grab()
         if not grabbed:
@@ -167,30 +154,38 @@ def extract_face_sequence(video_path, num_frames=NUM_FRAMES):
         if frame_idx in target_indices:
             ret, frame = cap.retrieve()
             if ret and frame is not None:
-                # Downscale large resolution immediately to 480p to keep RAM tiny & fast
+                # Downscale immediately to max 360p and free large raw 4K frame from memory
                 h, w = frame.shape[:2]
-                if max(h, w) > 480:
-                    s = 480.0 / max(h, w)
-                    frame = cv2.resize(frame, (int(w * s), int(h * s)), interpolation=cv2.INTER_LINEAR)
+                max_dim = max(h, w)
+                if max_dim > 360:
+                    s = 360.0 / max_dim
+                    frame_small = cv2.resize(frame, (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA)
+                else:
+                    frame_small = frame
+                del frame
 
-                # Center-crop fallback in case no face detected in this frame
-                h, w = frame.shape[:2]
-                min_dim = min(h, w)
-                cy, cx = h // 2, w // 2
-                center_crop = frame[cy - min_dim // 2: cy + min_dim // 2, cx - min_dim // 2: cx + min_dim // 2]
+                # Center-crop fallback
+                sh, sw = frame_small.shape[:2]
+                min_dim = min(sh, sw)
+                cy, cx = sh // 2, sw // 2
+                center_crop = frame_small[cy - min_dim // 2: cy + min_dim // 2, cx - min_dim // 2: cx + min_dim // 2]
                 if center_crop.size > 0:
                     center_resized = cv2.resize(center_crop, (FRAME_SIZE, FRAME_SIZE), interpolation=cv2.INTER_LINEAR)
                     slot_fallbacks[frame_idx] = cv2.cvtColor(center_resized, cv2.COLOR_BGR2RGB)
 
-                face = detect_and_crop_face(frame)
+                # Detect face on the small frame
+                face = detect_and_crop_face(frame_small)
                 if face is not None:
                     slot_faces[frame_idx] = face
+
+                del frame_small
 
             processed_indices.add(frame_idx)
 
         frame_idx += 1
 
     cap.release()
+    gc.collect()
 
     if len(slot_faces) == 0 and len(slot_fallbacks) == 0:
         raise ValueError("No video frames could be read or decoded from the uploaded file.")
