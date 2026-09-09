@@ -1,23 +1,36 @@
 services:
-  # Backend API & ML Service
+  # Backend Web Service
   - type: web
     name: authentiscan-backend
-    runtime: python
+    env: python
+    plan: free
+    region: oregon
     buildCommand: pip install -r ml-service/requirements.txt
     startCommand: cd ml-service && uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: DATABASE_URL
         value: sqlite:///./deepfake_db.sqlite
+      - key: ALLOWED_ORIGINS
+        value: https://authentiscan-frontend.onrender.com,http://localhost:5173
+      - key: MAX_UPLOAD_SIZE_MB
+        value: "500"
 
-  # Frontend Static Site (React + Vite)
+  # Frontend Static Site
   - type: web
     name: authentiscan-frontend
-    runtime: static
-    buildCommand: cd frontend && npm install && npm run build
-    staticPublishPath: frontend/dist
+    env: static
+    plan: free
+    region: oregon
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
     routes:
       - type: rewrite
         source: /*
         destination: /index.html
+    envVars:
+      - key: VITE_API_URL
+        value: https://authentiscan-backend-wfrb.onrender.com

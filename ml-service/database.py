@@ -1,9 +1,9 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
-from sqlalchemy.orm import declarative_base, sessionmaker
+import os
 from datetime import datetime
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
-import os
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Index
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 load_dotenv()
 
@@ -16,9 +16,17 @@ if not DATABASE_URL:
     else:
         DATABASE_URL = "sqlite:///./deepfake_db.sqlite"
 
+# Handle Render PostgreSQL URL prefix (postgres:// -> postgresql://)
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 engine_args = {}
 if DATABASE_URL.startswith("sqlite"):
     engine_args["connect_args"] = {"check_same_thread": False}
+elif DATABASE_URL.startswith("postgresql"):
+    engine_args["pool_pre_ping"] = True
+    engine_args["pool_size"] = 5
+    engine_args["max_overflow"] = 10
 
 engine = create_engine(DATABASE_URL, **engine_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -29,11 +37,19 @@ class PredictionRecord(Base):
     __tablename__ = "predictions"
 
     id = Column(Integer, primary_key=True, index=True)
-    filename = Column(String(255))
-    fake_probability = Column(Float)
-    prediction = Column(String(10))
-    confidence = Column(Float)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    video_hash = Column(String(64), index=True, nullable=True)
+    filename = Column(String(255), nullable=False)
+    fake_probability = Column(Float, nullable=False)
+    prediction = Column(String(10), nullable=False)
+    confidence = Column(Float, nullable=False)
+    analysis_time = Column(Float, nullable=True, default=0.0)
+    frames_analyzed = Column(Integer, nullable=True, default=20)
+    model_version = Column(String(50), nullable=True, default="v2.0-mobilenetv2-lstm")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        Index("idx_predictions_hash_created", "video_hash", "created_at"),
+    )
 
 
 def init_db():
@@ -43,17 +59,25 @@ def init_db():
         if db.query(PredictionRecord).count() == 0:
             sample_records = [
                 PredictionRecord(
+                    video_hash="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
                     filename="sample_real.mp4",
                     fake_probability=0.08,
                     prediction="REAL",
                     confidence=0.92,
+                    analysis_time=1.2,
+                    frames_analyzed=20,
+                    model_version="v2.0-mobilenetv2-lstm",
                     created_at=datetime.utcnow()
                 ),
                 PredictionRecord(
+                    video_hash="7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069",
                     filename="sample_fake.mp4",
                     fake_probability=0.94,
                     prediction="FAKE",
                     confidence=0.94,
+                    analysis_time=1.4,
+                    frames_analyzed=20,
+                    model_version="v2.0-mobilenetv2-lstm",
                     created_at=datetime.utcnow()
                 )
             ]

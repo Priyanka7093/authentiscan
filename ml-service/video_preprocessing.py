@@ -1,6 +1,16 @@
-import cv2
-import numpy as np
 import os
+import random
+import numpy as np
+
+# Set environment variables for reproducibility before importing TensorFlow/OpenCV
+os.environ["PYTHONHASHSEED"] = "42"
+os.environ["TF_DETERMINISTIC_OPS"] = "1"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+
+random.seed(42)
+np.random.seed(42)
+
+import cv2
 import urllib.request
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -21,7 +31,9 @@ try:
         FACE_DETECTOR_PATH,
         "",
         (320, 320),
-        score_threshold=0.6
+        score_threshold=0.6,
+        nms_threshold=0.3,
+        top_k=5000
     )
 except Exception as e:
     print(f"Warning: YuNet face detector not available ({e}). Using Haar Cascade fallback.")
@@ -30,14 +42,18 @@ except Exception as e:
 
 def detect_and_crop_face(frame):
     """
-    frame: raw BGR frame from OpenCV (H, W, 3)
-    Returns: cropped+resized face (224, 224, 3) RGB, or None if no face detected
+    Deterministic face detection and cropping:
+    - Downscales frame proportionally for speed & low memory
+    - Detects faces using YuNet (or Haar Cascade fallback)
+    - Deterministically selects the PRIMARY face (largest bounding box area with score >= 0.6)
+    - Adds 15% margin for facial context
+    - Returns cropped + resized RGB frame (224, 224, 3), or None if no face found.
     """
     if frame is None or frame.size == 0:
         return None
     h, w = frame.shape[:2]
 
-    # Downscale large frames for fast, memory-efficient face detection (max 360px)
+    # Standardize detection dimensions for fast, memory-safe inference (max 360px)
     max_dim = 360
     if max(h, w) > max_dim:
         scale = max_dim / float(max(h, w))
@@ -57,12 +73,26 @@ def detect_and_crop_face(frame):
             faces = None
 
     if faces is not None and len(faces) > 0:
-        fx, fy, fbw, fbh = faces[0][:4]
+        # Deterministically select the largest face by bounding box area (w * h)
+        best_face = None
+        max_area = -1.0
+        for f in faces:
+            area = float(f[2] * f[3])
+            score = float(f[-1]) if len(f) > 4 else 1.0
+            if score >= 0.5 and area > max_area:
+                max_area = area
+                best_face = f
+
+        if best_face is None:
+            best_face = faces[0]
+
+        fx, fy, fbw, fbh = best_face[:4]
         x = max(0, int(fx / scale))
         y = max(0, int(fy / scale))
         box_w = int(fbw / scale)
         box_h = int(fbh / scale)
 
+        # 15% contextual padding around face
         mx = int(box_w * 0.15)
         my = int(box_h * 0.15)
         x1 = max(0, x - mx)
@@ -75,15 +105,17 @@ def detect_and_crop_face(frame):
             face_resized = cv2.resize(face_crop, (FRAME_SIZE, FRAME_SIZE), interpolation=cv2.INTER_LINEAR)
             return cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB)
 
-    # Fast fallback: Haar Cascade
+    # Deterministic fallback: Haar Cascade
     try:
         gray = cv2.cvtColor(detect_frame, cv2.COLOR_BGR2GRAY)
         cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         if os.path.exists(cascade_path):
             haar = cv2.CascadeClassifier(cascade_path)
-            haar_faces = haar.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=3, minSize=(25, 25))
+            haar_faces = haar.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=4, minSize=(25, 25))
             if len(haar_faces) > 0:
-                hx, hy, hw, hh = haar_faces[0]
+                # Pick largest area
+                best_haar = max(haar_faces, key=lambda b: b[2] * b[3])
+                hx, hy, hw, hh = best_haar
                 x1 = max(0, int(hx / scale))
                 y1 = max(0, int(hy / scale))
                 x2 = min(w, x1 + int(hw / scale))
@@ -100,29 +132,41 @@ def detect_and_crop_face(frame):
 
 def extract_face_sequence(video_path, num_frames=NUM_FRAMES):
     """
-    Ultra-fast grab-and-retrieve frame sampling:
-    Only decodes the 20 target frames without decoding intermediate frames.
+    Deterministic & fast frame sampling:
+    1. Reads total frame count from video metadata.
+    2. Computes fixed, deterministic target frame indices (evenly distributed across video).
+    3. Uses cap.grab() to skip unselected frames and cap.retrieve() only for the target frames.
+    4. Detects the primary face on each target frame.
+    5. Applies temporal forward/backward fill so that slot i strictly represents time point i.
+    6. Returns (num_frames, 224, 224, 3) uint8 RGB array.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        raise ValueError("Could not open video file.")
+        raise ValueError("Could not open video file. Ensure file is a valid video format.")
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if total_frames <= 0:
+        # Fallback for streams/codecs that don't report frame count upfront
         total_frames = 100
 
-    step = max(1, total_frames // num_frames)
-    collected_faces = []
-    fallback_frames = []
+    # Calculate exact deterministic target indices
+    if total_frames < num_frames:
+        target_indices = set(range(total_frames))
+        total_slots = total_frames
+    else:
+        target_indices = set(np.linspace(0, total_frames - 1, num_frames, dtype=int).tolist())
+        total_slots = num_frames
+
+    slot_faces = {}
+    slot_fallbacks = {}
 
     frame_idx = 0
-    # Fast grab loop (skips decoding unwanted frames)
-    while cap.isOpened() and len(collected_faces) < num_frames:
+    while cap.isOpened() and len(slot_faces) + len(slot_fallbacks) < len(target_indices):
         grabbed = cap.grab()
         if not grabbed:
             break
 
-        if frame_idx % step == 0:
+        if frame_idx in target_indices:
             ret, frame = cap.retrieve()
             if ret and frame is not None:
                 # Downscale large resolution immediately to 480p to keep RAM tiny
@@ -138,24 +182,46 @@ def extract_face_sequence(video_path, num_frames=NUM_FRAMES):
                 center_crop = frame[cy - min_dim // 2: cy + min_dim // 2, cx - min_dim // 2: cx + min_dim // 2]
                 if center_crop.size > 0:
                     center_resized = cv2.resize(center_crop, (FRAME_SIZE, FRAME_SIZE), interpolation=cv2.INTER_LINEAR)
-                    fallback_frames.append(cv2.cvtColor(center_resized, cv2.COLOR_BGR2RGB))
+                    slot_fallbacks[frame_idx] = cv2.cvtColor(center_resized, cv2.COLOR_BGR2RGB)
 
                 face = detect_and_crop_face(frame)
                 if face is not None:
-                    collected_faces.append(face)
+                    slot_faces[frame_idx] = face
 
         frame_idx += 1
 
     cap.release()
 
-    if len(collected_faces) == 0:
-        if len(fallback_frames) > 0:
-            collected_faces = fallback_frames
+    if len(slot_faces) == 0 and len(slot_fallbacks) == 0:
+        raise ValueError("No video frames could be read or decoded from the uploaded file.")
+
+    # Assemble ordered sequence across the sorted target indices
+    ordered_target_indices = sorted(list(target_indices))
+    sequence = []
+    last_valid_face = None
+
+    # First pass: forward fill
+    for idx in ordered_target_indices:
+        if idx in slot_faces:
+            last_valid_face = slot_faces[idx]
+            sequence.append(last_valid_face)
+        elif last_valid_face is not None:
+            sequence.append(last_valid_face)
+        elif idx in slot_fallbacks:
+            sequence.append(slot_fallbacks[idx])
         else:
-            raise ValueError("No video frames could be read.")
+            sequence.append(None)
 
-    while len(collected_faces) < num_frames:
-        collected_faces.append(collected_faces[-1])
+    # Second pass: backward fill for any leading None values
+    first_valid = next((f for f in sequence if f is not None), None)
+    if first_valid is None:
+        raise ValueError("Failed to extract any usable frames from video.")
 
-    collected_faces = collected_faces[:num_frames]
-    return np.array(collected_faces, dtype=np.uint8)
+    sequence = [f if f is not None else first_valid for f in sequence]
+
+    # Pad or trim strictly to num_frames
+    while len(sequence) < num_frames:
+        sequence.append(sequence[-1])
+
+    sequence = sequence[:num_frames]
+    return np.array(sequence, dtype=np.uint8)

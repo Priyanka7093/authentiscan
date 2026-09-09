@@ -8,3 +8,4 @@ SQLAlchemy>=2.0.0
 python-dotenv>=1.0.0
 opencv-python-headless>=4.8.0
 mysql-connector-python>=8.0.0
+psycopg2-binary>=2.9.0
